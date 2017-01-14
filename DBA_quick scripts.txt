@@ -1,0 +1,191 @@
+EXEC sp_change_users_login 'Report';
+exec sp_change_users_login 'Auto_Fix', 'Jon', NULL, 'P@ssw0rd1'
+exec sp_change_users_login 'Update_One', 'App_User', 'App_User'
+--------------------------Active sessions--------------------------------------------------------------------
+SELECT 
+    DB_NAME(dbid) as DBName, 
+    COUNT(dbid) as NumberOfConnections,
+    loginame as LoginName
+FROM
+    sys.sysprocesses
+WHERE 
+    dbid > 0
+GROUP BY 
+    dbid, loginame
+;
+------------------------------------Backyp Info---------------------------------------------------------------
+SELECT db.name, 
+case when MAX(b.backup_finish_date) is NULL then 'No Backup' else convert(varchar(100), 
+	MAX(b.backup_finish_date)) end AS last_backup_finish_date
+FROM sys.databases db
+LEFT OUTER JOIN msdb.dbo.backupset b ON db.name = b.database_name AND b.type = 'D'
+	WHERE db.database_id NOT IN (2) 
+GROUP BY db.name
+ORDER BY 2 DESC
+------------------------------------------------List all the tables with Indexes-------------------------------
+select t.name As TableName,s.name as IndexName,
+create_date as DateCreated, modify_date as DateModified
+from sys.tables t
+join sys.indexes s on t.object_id = s.object_id
+where objectpropertyex(t.object_id,'TableHasIndex') = 1
+and index_id > 0
+--------------------------------------------Owner of Agent Jobs------------------------------------------------
+
+select s.name,l.name,*
+ from  msdb.sys.sysjobs s
+ left join master.sys.syslogins l on s.owner_sid = l.sid
+ --------------------------------------Get restore dates for all databases--------------------------------------
+ 
+SELECT
+    SERVER_NAME [SOURCE SERVER]
+    ,RECOVERY_MODEL
+    ,DESTINATION_DATABASE_NAME
+    ,RESTOREHISTORY.[USER_NAME]
+    ,MAX(RESTORE_DATE)
+FROM
+MSDB.DBO.BACKUPSET
+INNER JOIN MSDB.DBO.RESTOREHISTORY
+    ON BACKUPSET.BACKUP_SET_ID = RESTOREHISTORY.BACKUP_SET_ID
+GROUP BY
+    SERVER_NAME
+    ,RECOVERY_MODEL
+    ,DESTINATION_DATABASE_NAME
+    ,RESTOREHISTORY.[USER_NAME]
+	
+---------------------Get last backup dates for all databases-----------------------------------------------------	
+
+WITH LastBackupTaken AS (
+SELECT database_name,
+backup_finish_date,
+RowNumber = ROW_NUMBER() OVER (PARTITION BY database_name
+                ORDER BY backup_finish_date DESC)
+FROM msdb.dbo.backupset
+)
+ 
+SELECT database_name,database_name FROM LastBackupTaken
+WHERE RowNumber = 1
+-------------------------------Percent Of The Log Is Being Used For Each Database--------------------------------
+SELECT instance_name,cntr_value
+FROM sys.dm_os_performance_counters
+WHERE OBJECT_NAME = 'SQLServer:Databases'  
+and counter_name = 'Percent Log Used'
+and instance_name <> '_Total'
+ORDER BY   cntr_value DESC
+----------------------------------------------------------Kill All Active Connections To A Database---------------
+ALTER DATABASE YourDatabase SET SINGLE_USER WITH ROLLBACK IMMEDIATE
+ 
+--do you stuff here
+ 
+ALTER DATABASE YourDatabase SET MULTI_USER
+
+------------------------------------------------------------user connections---------------------------------------
+select  count(*)  
+from sys.dm_exec_connections
+-----------------------------------------------------------------Buffer cache hit ratio----------------------------
+SELECT (a.cntr_value * 1.0 / b.cntr_value) * 100.0 AS BufferCacheHitRatio
+FROM sys.dm_os_performance_counters  a
+JOIN  (SELECT cntr_value,OBJECT_NAME
+    FROM sys.dm_os_performance_counters  
+    WHERE counter_name = 'Buffer cache hit ratio base'
+        AND OBJECT_NAME = 'SQLServer:Buffer Manager') b ON  a.OBJECT_NAME = b.OBJECT_NAME
+WHERE a.counter_name = 'Buffer cache hit ratio'
+AND a.OBJECT_NAME = 'SQLServer:Buffer Manager'
+------------------------------Find Out What The Active Node Of A SQL Active-Passive Failover Cluster ---------------
+SELECT SERVERPROPERTY('ComputerNamePhysicalNetBIOS')
+----------------------------------------------Restore time estimate------------------------------------------------
+SELECT
+    d.PERCENT_COMPLETE AS [%Complete],
+    d.TOTAL_ELAPSED_TIME/60000 AS ElapsedTimeMin,
+    d.ESTIMATED_COMPLETION_TIME/60000   AS TimeRemainingMin,
+    d.TOTAL_ELAPSED_TIME*0.00000024 AS ElapsedTimeHours,
+    d.ESTIMATED_COMPLETION_TIME*0.00000024  AS TimeRemainingHours,
+    s.TEXT AS Command
+FROM    sys.dm_exec_requests d
+CROSS APPLY sys.dm_exec_sql_text(d.sql_handle)AS s
+WHERE  d.COMMAND LIKE 'RESTORE DATABASE%'
+ORDER   BY 2 DESC, 3 DESC
+----------------------------------------------dbspace check---------------------------------------------------------
+ USE tempdb
+       SELECT
+              a.FILEID,
+              CONVERT(decimal(12,2),ROUND(a.size/128.000,2)) as [FILESIZEINMB] ,
+              CONVERT(decimal(12,2),ROUND(fileproperty(a.name,'SpaceUsed')/128.000,2)) as [SPACEUSEDINMB],
+              CONVERT(decimal(12,2),ROUND((a.size-fileproperty(a.name,'SpaceUsed'))/128.000,2)) as [FREESPACEINMB],
+              a.name as [DATABASENAME],
+              a.FILENAME as [FILENAME]
+ --------------------------------------------Log File Shrinking-----------------------------------------------------
+ 
+ USE AdventureWorks2012;  
+GO  
+-- Truncate the log by changing the database recovery model to SIMPLE.  
+ALTER DATABASE AdventureWorks2012  
+SET RECOVERY SIMPLE;  
+GO  
+-- Shrink the truncated log file to 1 MB.  
+DBCC SHRINKFILE (AdventureWorks2012_Log, 1);  
+GO  
+-- Reset the database recovery model.  
+ALTER DATABASE AdventureWorks2012  
+SET RECOVERY FULL;  
+GO  
+-------------------------------------------------------Resotre history for all DB's---------------------------------
+WITH LastRestores AS
+(
+SELECT
+    DatabaseName = [d].[name] ,
+    [d].[create_date] ,
+    [d].[compatibility_level] ,
+    [d].[collation_name] ,
+    r.*,
+    RowNum = ROW_NUMBER() OVER (PARTITION BY d.Name ORDER BY r.[restore_date] DESC)
+FROM master.sys.databases d
+LEFT OUTER JOIN msdb.dbo.[restorehistory] r ON r.[destination_database_name] = d.Name
+)
+SELECT *
+FROM [LastRestores]
+WHERE [RowNum] = 1
+
+-------------------------------------Fix Orpahnded users-------------------------------------------------------------
+First, make sure that this is the problem. This will lists the orphaned users:
+
+EXEC sp_change_users_login 'Report'
+If you already have a login id and password for this user, fix it by doing:
+
+EXEC sp_change_users_login 'Auto_Fix', 'user'
+
+If you want to create a new login id and password for this user, fix it by doing:
+
+EXEC sp_change_users_login 'Auto_Fix', 'user', 'login', 'password'
+
+EXEC sp_change_users_login 'update_one', 'db_login1', 'db_login1';
+---------------------------------------------------Machine Name-------------------------------------------------------
+ SELECT serverproperty('Machinename') as Hostname
+ ----------------------------------------------Each request that is currently executing-----------------------------------------------------------------------
+ SELECT     r.start_time [Start Time],session_ID [SPID],
+            DB_NAME(database_id) [Database],
+            SUBSTRING(t.text,(r.statement_start_offset/2)+1,
+            CASE WHEN statement_end_offset=-1 OR statement_end_offset=0 
+            THEN (DATALENGTH(t.Text)-r.statement_start_offset/2)+1 
+            ELSE (r.statement_end_offset-r.statement_start_offset)/2+1
+            END) [Executing SQL], 
+            Status,command,wait_type,wait_time,wait_resource, 
+            last_wait_type
+FROM        sys.dm_exec_requests r
+OUTER APPLY sys.dm_exec_sql_text(sql_handle) t
+WHERE       session_id != @@SPID -- don't show this query
+AND         session_id > 50 -- don't show system queries
+ORDER BY    r.start_time
+---------------------------------------------------------Check the DBO on all the user databases------------------------------------------------------------------------------------------------
+SELECT name AS DBName, suser_sname(owner_sid) AS DBOwner FROM sys.databases WHERE suser_sname(owner_sid) <> 'sa'
+EXEC sp_changedbowner 'sa';  
+-----------------------------------------------------loginfo---------------------------------------------------------------------------------------------------
+DBCC SQLPERF(logspace)
+-----------------------------------------------------RAISE ERROR--------------------------------------------------------------------------------------------------
+RAISERROR('This is a test alert naveen.pendli@hpe.com (close alert after 5 mins)',10,1) with log 
+-------------------------------------find last login of a sql login-------------------------------------
+SELECT MAX(login_time) AS [Last Login Time], login_name [Login]
+FROM sys.dm_exec_sessions
+GROUP BY login_name;
+------------------------------------------Check the drives on Windows server------------------------------------------------------------------------------------
+cmd:fsutil fsinfo drives
+-------------------------------------------------------------------------------------------------
