@@ -188,4 +188,21 @@ FROM sys.dm_exec_sessions
 GROUP BY login_name;
 ------------------------------------------Check the drives on Windows server------------------------------------------------------------------------------------
 cmd:fsutil fsinfo drives
--------------------------------------------------------------------------------------------------
+---------------------------------------------Script to find bad Sessions or Processes----------------------------------------------------
+
+Running this script will tell you which instance of a process is using lots of CPU on the database server. You can use the loginame or hostname columns to identify the person.
+---
+SELECT TOP 25
+	spid
+	,blocked
+	,convert(varchar(10),db_name(dbid)) as DBName
+	,cpu
+	,datediff(second,login_time, getdate()) as Secs
+	,convert(float, cpu / datediff(second,login_time, getdate())) as PScore
+	,convert(varchar(16), hostname) as Host
+	,convert(varchar(50), program_name) as Program
+	,convert(varchar(20), loginame) as Login
+FROM master..sysprocesses
+WHERE datediff(second,login_time, getdate()) > 0 and spid > 50
+ORDER BY pscore desc
+-----------------------------------------------------------------------------------------------------------------------
