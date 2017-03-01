@@ -1,0 +1,139 @@
+$SOURCE_PATH = ""
+$DESTINATION_PATH = ""
+$FILE_FILTER = "*_*_*.txt"
+$FILE_TYPE = ".txt"
+$RETENTION_HOURS = 12
+$LAST_DATE_CREATED = (Get-Date).AddHours(-$RETENTION_HOURS)
+
+# AlertApp -status $true/$false -message "Message"
+# Standard IO function. We can redirect this to a log file later if needed.
+# All IO needs to happen with this function.
+#
+Function AlertApp {
+
+    param(
+        [bool]$status,
+        [string]$message
+    )
+
+    $stat_msg = "FAIL"
+
+    if ($status) {
+        $stat_msg = "OKAY"
+    }
+
+    Write-Host "$stat_msg ($(Get-Date))`t:`t$message" -ForegroundColor White
+}
+
+# LoadFiles
+# Will look at the source directory and generate the eight filenames for each
+# copy session detected. Will return a datastructure with the file details.
+#
+Function LoadFiles {
+    $raw_files = Get-ChildItem ($SOURCE_PATH + $FILE_FILTER)
+    AlertApp -status $true -message "Loaded $($raw_files.Length) raw files from source"
+    $possible_files = @{}
+
+    foreach ($raw_file in $raw_files) {
+        #AlertApp -status $true -message "Parsing $($raw_file.Name)"
+        $split_data = $raw_file.Name.Split('_')
+        $db_session = "$($split_data[0])_$($split_data[1])"
+        $copy_id = [int]$split_data[0]
+        
+        if (-not $possible_files.ContainsKey($copy_id)) {
+            AlertApp -status $true -message "Adding possible files for $db_session"
+
+            $data = @{
+                "files" = $false;
+            }
+
+            $generated_files = @()
+            for ($i=1; $i -le 8; $i++) {
+
+                $new_file_obj = @{
+                    "name" = $null;
+                    "on_destination" = $null;
+                    "on_source" = $null;
+                }
+
+                $files_expired = $false
+                $new_file_name = $db_session + "_$i$FILE_TYPE"
+                $new_file_obj["name"] = $new_file_name
+
+                # CHECK ON SOURCE.
+                $on_source = $true
+                $on_source = Get-ChildItem ($SOURCE_PATH + $new_file_name) -ErrorAction SilentlyContinue
+                if (-not $?) {
+                    $on_source = $false
+                    AlertApp -status $false -message "$($SOURCE_PATH + $new_file_name) is not in source"
+                }else{
+                    AlertApp -status $true -message "$($SOURCE_PATH + $new_file_name) is on the source"
+                     
+                    # Check if we need to delete it.
+                    if ($on_source.Exists -and $on_source.CreationTimeUtc -lt $LAST_DATE_CREATED) {
+                        $on_source = $false
+                        $files_expired = $true
+                        AlertApp -status $false -message "$($SOURCE_PATH + $new_file_name) is older than $RETENTION_HOURS hours, deleting"
+                        Remove-Item ($SOURCE_PATH + $new_file_name)
+                    }
+                }
+
+                # CHECK ON DESTINATION.
+                $on_destination = $true
+                $on_destination = Get-ChildItem ($DESTINATION_PATH + $new_file_name) -ErrorAction SilentlyContinue
+                if (-not $?) {
+                    $on_destination = $false
+                    AlertApp -status $false -message "$($DESTINATION_PATH + $new_file_name) is not on the destination"
+                }else{
+                    AlertApp -status $true -message "$($DESTINATION_PATH + $new_file_name) is on the destination"
+
+                    # Check if we need to delete it.
+                    if ($on_destination.Exists -and $on_destination.CreationTimeUtc -lt $LAST_DATE_CREATED) {
+                        $on_destination = $false
+                        $files_expired = $true
+                        AlertApp -status $false -message "$($DESTINATION_PATH + $new_file_name) is older than $RETENTION_HOURS, deleting"
+                        Remove-Item ($DESTINATION_PATH + $new_file_name)
+                    }
+                }
+
+                if ($on_source -and (-not $on_destination) -and (-not $files_expired)) {
+                    AlertApp -status $true -message "Attempting to copy $new_file_name to $DESTINATION_PATH"
+                    Copy-Item ($SOURCE_PATH + $new_file_name) -Destination ($DESTINATION_PATH + $new_file_name)
+                }
+
+                $new_file_obj["on_source"] = [bool]$on_source
+                $new_file_obj["on_destination"] = [bool]$on_destination
+                $generated_files += $new_file_obj
+            }
+
+            $data["files"] = $generated_files
+            $possible_files[$copy_id] = $data
+        }
+    }
+    return $possible_files
+}
+
+# UpdateDB
+# This function will look at the filestats loaded from LoadFiles.
+# If all 8 files are on the destination then update the status of
+# the copy on the portal (only if needed).
+#
+function UpdateDB {
+    foreach ($copy_session_id in $POSSIBLE_FILES.Keys) {
+        $session = $POSSIBLE_FILES[$copy_session_id]
+
+        $num_files = 0
+        foreach ($file in $session.files) {
+            if ($file.on_destination) {
+                $num_files += 1
+            }
+        }
+
+        if ($num_files -eq 8) {
+            AlertApp -status $true -message "Copy session:$copy_session_id complete, $num_files/8 files"
+            # TODO. UPDATE THE DB HERE... ONLY IF THE STATUS NEEDS TO CHANGE.
+        }else{
+            AlertApp -status $false -message "Copy session:$copy_session_id not complete, $num_files/8 files"
+        }
+    }
+}
